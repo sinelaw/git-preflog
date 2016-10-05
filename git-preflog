@@ -4,6 +4,7 @@ import subprocess
 import os
 import datetime
 import time
+import itertools
 
 from babel.dates import format_timedelta
 
@@ -20,6 +21,65 @@ def iter_files(base, files=True):
                     yield pathname[base_n:]
     for y in recurse(base):
         yield y
+
+def title(now, key, r):
+    delta = datetime.timedelta(seconds=(key - now))
+    return "%s %s ago:" % (r, format_timedelta(delta, locale='en_US'), )
+
+def process_key(by_timestamp, now, key):
+    change_type = None
+    is_fetch = True
+    is_push = True
+    fetch_remote = None
+    push_remote = None
+    for (ref, details, action) in by_timestamp[key]:
+        if not action.startswith('fetch: '):
+            is_fetch = False
+        else:
+            (remote, _) = ref.split('/', 1)
+            if fetch_remote is None:
+                fetch_remote = remote
+            elif fetch_remote != remote:
+                fetch_remote = -1
+        if not action.startswith('update by push'):
+            is_push = False
+        else:
+            (remote, _) = ref.split('/', 1)
+            if push_remote is None:
+                push_remote = remote
+            elif push_remote != remote:
+                push_remote = -1
+    if is_fetch:
+        change_type = 'fetch'
+    if is_push:
+        change_type = 'push'
+    if change_type == 'fetch':
+        t = title(now, key, "Fetch from %s" % (fetch_remote, ))
+        for (ref, details, action) in by_timestamp[key]:
+            (_, branch) = ref.split('/', 1)
+            flag = ' '
+            rangestr = '..'
+            suffix = ''
+            if action == 'fetch: forced-update':
+                rangestr = '...'
+                suffix = "  (forced update)"
+                flag = "+"
+            range_total = "%s%s%s" % (details[0][:12], rangestr, details[1][:12])
+            if action == 'fetch: storing head':
+                range_total = '[new branch]'
+                flag = "*"
+            v = " %s %-30s %s -> %s%s" % (flag, range_total, branch, ref, suffix)
+            yield (t, v)
+            # print (ref, details, action)
+    elif change_type == 'push':
+        t = title(now, key, "Push to %s" % (push_remote, ))
+        for (ref, details, action) in by_timestamp[key]:
+            (_, branch) = ref.split('/', 1)
+            yield (t, "   " + branch)
+    else:
+        #t = title(now, key, "<unhandled reflog change>")
+        #yield (t, "")
+        return
 
 def main():
     git_dir = subprocess.check_output("git rev-parse --git-dir", shell=True).strip()
@@ -39,62 +99,17 @@ def main():
     tses.sort()
     now = time.time()
 
-    for key in tses:
-        def title(r):
-            delta = datetime.timedelta(seconds=(key - now))
-            print
-            print "%s %s ago:" % (r, format_timedelta(delta, locale='en_US'), )
-        change_type = None
-        is_fetch = True
-        is_push = True
-        fetch_remote = None
-        push_remote = None
-        for (ref, details, action) in by_timestamp[key]:
-            if not action.startswith('fetch: '):
-                is_fetch = False
-            else:
-                (remote, _) = ref.split('/', 1)
-                if fetch_remote is None:
-                    fetch_remote = remote
-                elif fetch_remote != remote:
-                    fetch_remote = -1
-            if not action.startswith('update by push'):
-                is_push = False
-            else:
-                (remote, _) = ref.split('/', 1)
-                if push_remote is None:
-                    push_remote = remote
-                elif push_remote != remote:
-                    push_remote = -1
-        if is_fetch:
-            change_type = 'fetch'
-        if is_push:
-            change_type = 'push'
-        if change_type == 'fetch':
-            title("Fetch from %s" % (fetch_remote, ))
-            for (ref, details, action) in by_timestamp[key]:
-                (_, branch) = ref.split('/', 1)
-                flag = ' '
-                rangestr = '..'
-                suffix = ''
-                if action == 'fetch: forced-update':
-                    rangestr = '...'
-                    suffix = "  (forced update)"
-                    flag = "+"
-                range_total = "%s%s%s" % (details[0][:12], rangestr, details[1][:12])
-                if action == 'fetch: storing head':
-                    range_total = '[new branch]'
-                    flag = "*"
-                print " %s %-30s %s -> %s%s" % (flag, range_total, branch, ref, suffix)
-                # print (ref, details, action)
-        elif change_type == 'push':
-            title("Push to %s" % (push_remote, ))
-            for (ref, details, action) in by_timestamp[key]:
-                (_, branch) = ref.split('/', 1)
-                print "   " + branch
-        else:
-            title("<unhandled reflog change>")
+    def gather_results():
+        for key in tses:
+            for (title, value) in process_key(by_timestamp, now, key):
+                yield (title, value)
 
+    for (title, tvs) in itertools.groupby(gather_results(), lambda (t, v): t):
+        print ""
+        print title
+        values = sorted(set(v for (_,v) in tvs))
+        for value in values:
+            print value
             # print datetime.datetime.strptime(ts, "%t %z")
 
 if __name__ == "__main__":
